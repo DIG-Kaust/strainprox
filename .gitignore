@@ -27,6 +27,12 @@ strainprox/version.py
 data/Hess/Hess_*
 data/Hess/tim*
 notebooks/hess/strain_inversion_Hess_*
+notebooks/hess/strain_paper*
+notebooks/backup/
+notebooks/slurm*
+notebooks/*.slurm
+notebooks/dcgm/
+results/
 .vscode/
 
 
