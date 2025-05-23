@@ -21,7 +21,6 @@ classifiers = [
     ]
 dependencies = [
         "numpy >= 1.22.0",
-        "torch>=1.10.1",
         "pylops >= 2.0.0",
         "setuptools >= 61.2.0",
     ]

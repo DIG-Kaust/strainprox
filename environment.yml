@@ -10,9 +10,16 @@ dependencies:
   - scipy=1.5.2
   - matplotlib=3.5.3
   - jupyter=1.0.0
+  - ipywidgets=7.7.2
+  - scikit-learn=1.0.2
+  - typing_extensions=4.3.0
   - pandas=1.4.4
+  - fonts-conda-forge
+  - fonts-conda-ecosystem
   - pip:
     - pylops==2.1.0
     - pyproximal==0.9.0
+    - tqdm==4.64.1
+    - pytest==7.2.0
 
 
