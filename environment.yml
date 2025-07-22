@@ -1,4 +1,4 @@
-name: strainprox2
+name: strainprox
 channels:
   - pytorch
   - conda-forge
