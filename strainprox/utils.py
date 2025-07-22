@@ -3,7 +3,9 @@ import matplotlib.pyplot as plt
 from matplotlib.colorbar import Colorbar
 import matplotlib.gridspec as gridspec
 from scipy.interpolate import interp1d
-from typing import List, Tuple, Optional, Union, Callable
+from typing import List, Tuple, Optional, Union, Callable, Dict, Any
+from pathlib import Path
+import cupy as cp
 
 def callbackx(x: np.ndarray, ui: np.ndarray, xtrue: np.ndarray, 
               xhist: List[np.ndarray], xsnr: List[float], xerr: List[float]) -> None:
@@ -106,47 +108,87 @@ def SNR(xref: np.ndarray, xest: np.ndarray) -> float:
     return 10. * np.log10(xrefv / np.mean(np.abs(xref - xest)**2))
 
 
-def apply_time_shift(t: np.ndarray, ui: np.ndarray, d2: np.ndarray, 
-                     C: Callable, dims: Tuple[int, ...]) -> np.ndarray:
-    """
-    Apply time shift to the monitor data based on current strain estimate.
-    
+def apply_time_shift(d: np.ndarray,
+                     time_shift: np.ndarray,
+                     t: np.ndarray,
+                     dims: Tuple[int, ...]) -> np.ndarray:
+    """Apply time shift to a given 2D or 3D seismic dataset.
+
     Parameters
     ----------
+    d : np.ndarray
+        2D or 3D data to be shifted (e.g., monitor data).
+    time_shift : np.ndarray
+        2D or 3D time shift field.
     t : np.ndarray
-        Time axis
-    ui : np.ndarray
-        Current strain estimate
-    d2 : np.ndarray
-        Original monitor data
-    C : Callable
-        Causal integration operator
+        1D array of time values, corresponding to the first axis of `d`.
     dims : Tuple[int, ...]
-        Dimensions of the model
-    
+        The dimensions of the data, e.g., (nt, nx) or (nt, nx, ny).
+
     Returns
     -------
     np.ndarray
-        Shifted monitor data
+        Shifted data array.
     """
-    d2i = np.zeros_like(d2)
-    
+    # Reshape arrays if model is 3D
+    if len(dims) == 3:
+        d = d.reshape(dims[0], -1)
+        dims = (dims[0], dims[1]*dims[2])
+
+    d_shifted = np.zeros_like(d)
+
     # Create time-shift interpolators for each trace
-    time_shifts = (C*ui).reshape(dims)
-    shifted_time_grid = t.copy()[:, np.newaxis] - time_shifts
-    
+    shifted_time_grid = t.copy()[:, np.newaxis] - time_shift.reshape(dims)
+
     # Apply interpolation for each trace
-    for col in range(d2.shape[1]):
+    for col in range(d.shape[1]):
         interpolator = interp1d(
-            shifted_time_grid[:, col], 
-            d2[:, col], 
-            kind='cubic', 
+            shifted_time_grid[:, col],
+            d[:, col],
+            kind='cubic',
             fill_value="extrapolate"
         )
-        d2i[:, col] = interpolator(t)
-        
-    return d2i
+        d_shifted[:, col] = interpolator(t)
 
+    return d_shifted
+
+def apply_time_shift_cupy(d: cp.ndarray,
+                          time_shift: cp.ndarray,
+                          t: cp.ndarray,
+                          dims: Tuple[int, ...]) -> cp.ndarray:
+    """Apply time shift to a given 2D or 3D seismic dataset.
+
+    Parameters
+    ----------
+    d : cp.ndarray
+        2D or 3D data to be shifted (e.g., monitor data).
+    time_shift : cp.ndarray
+        2D or 3D time shift field.
+    t : cp.ndarray
+        1D array of time values, corresponding to the first axis of `d`.
+    dims : Tuple[int, ...]
+        The dimensions of the data, e.g., (nt, nx) or (nt, nx, ny).
+
+    Returns
+    -------
+    cp.ndarray
+        Shifted data array.
+    """
+    # Reshape arrays if model is 3D
+    if len(dims) == 3:
+        d = d.reshape(dims[0], -1)
+        dims = (dims[0], dims[1] * dims[2])
+
+    
+    d_shifted = cp.zeros_like(d)
+
+    # Create the grid of shifted time points for each trace
+    shifted_time_grid = t.copy()[:, cp.newaxis] - time_shift.reshape(dims)
+
+    for col in range(d.shape[1]):
+        d_shifted[:, col] = cp.interp(t, shifted_time_grid[:, col], d[:, col])
+
+    return d_shifted
 
 def plotter_4D(b: np.ndarray, m: np.ndarray, dt: float = 1.0, 
                type: str = 'impedance', perc: float = 1.0, 
@@ -413,3 +455,221 @@ def plot_results(ui: np.ndarray, d1: np.ndarray, d2: np.ndarray, d2i: np.ndarray
         plt.tight_layout()
         plt.subplots_adjust(wspace=0.2) 
         plt.show()
+
+
+def clim(in_content: np.ndarray, ratio: float = 95) -> Tuple[float, float]:
+    """Calculate symmetric color limits for a plot.
+
+    Parameters
+    ----------
+    in_content : np.ndarray
+        Input data to calculate limits from.
+    ratio : float, optional
+        Percentile to use for clipping. Default is 95.
+
+    Returns
+    -------
+    tuple of (float, float)
+        A tuple containing the negative and positive color limits.
+    """
+    c = np.percentile(np.absolute(in_content), ratio)
+    return -c, c
+
+
+def explode_volume(
+    volume: np.ndarray, 
+    t: Optional[int] = None, 
+    x: Optional[int] = None, 
+    y: Optional[int] = None, 
+    vmin: Optional[float] = None, 
+    vmax: Optional[float] = None,
+    figsize: Tuple[int, int] = (8, 8), 
+    cmap: str = 'bone', 
+    clipval: Optional[Tuple[float, float]] = None, 
+    p: int = 98,
+    tlim: Optional[Tuple[float, float]] = None, 
+    xlim: Optional[Tuple[float, float]] = None, 
+    ylim: Optional[Tuple[float, float]] = None,
+    labels: Tuple[str, str, str] = ('[ms]', '', ''),
+    tlabel: str = 't',
+    ratio: Optional[Tuple[Tuple[int, int], Tuple[int, int]]] = None,
+    linespec: Optional[Dict[str, Any]] = None, 
+    title: str = '',
+    filename: Optional[Union[str, Path]] = None,
+    save_opts: Optional[Dict[str, Any]] = None,
+    whspace: Optional[Tuple[float, float]] = None,
+    colorbar_title: str = ''
+) -> Tuple[plt.Figure, Tuple[plt.Axes, plt.Axes, plt.Axes]]:
+    """Create an exploded view of a 3D volume.
+
+    Displays three orthogonal slices of a 3D volume.
+
+    Parameters
+    ----------
+    volume : np.ndarray
+        The 3D data volume.
+    t, x, y : int, optional
+        Indices of the slices to display. If None, defaults to the center.
+    vmin, vmax : float, optional
+        Color limits.
+    figsize : tuple of (int, int), optional
+        Figure size. Default is (8, 8).
+    cmap : str, optional
+        Colormap. Default is 'bone'.
+    clipval : tuple of (float, float), optional
+        Absolute values for clipping.
+    p : int, optional
+        Percentile for clipping if `clipval` is not provided. Default is 98.
+    tlim, xlim, ylim : tuple of (float, float), optional
+        Axis limits.
+    labels : tuple of str, optional
+        Axis labels units.
+    tlabel : str, optional
+        Label for the time/depth axis.
+    ratio : tuple, optional
+        Aspect ratios for the plots.
+    linespec : dict, optional
+        Specifications for the reference lines.
+    title : str, optional
+        Figure title.
+    filename : str or Path, optional
+        Path to save the figure.
+    save_opts : dict, optional
+        Options for saving the figure.
+    whspace : tuple of (float, float), optional
+        Width and height space between subplots.
+    colorbar_title : str, optional
+        Title for the colorbar.
+
+    Returns
+    -------
+    plt.Figure
+        The matplotlib Figure object.
+    tuple of plt.Axes
+        A tuple containing the three axes objects for the slices.
+    """
+    if linespec is None:
+        linespec = dict(ls='-', lw=1, color='orange')
+    nt, nx, ny = volume.shape
+    t_label, x_label, y_label = labels
+    
+    t = t if t is not None else nt//2
+    x = x if x is not None else nx//2
+    y = y if y is not None else ny//2
+
+    if tlim is None:
+        t_label = "samples"
+        tlim = (0, volume.shape[0])
+    if xlim is None:
+        x_label = "samples"
+        xlim = (0, volume.shape[1])
+    if ylim is None:
+        y_label = "samples"
+        ylim = (0, volume.shape[2])
+    
+    # vertical lines for coordinates reference
+    tline = (tlim[1] - tlim[0]) / nt * t + tlim[0]
+    xline = (xlim[1] - xlim[0]) / nx * x + xlim[0]
+    yline = (ylim[1] - ylim[0]) / ny * y + ylim[0]
+    
+    # instantiate plots
+    fig = plt.figure(figsize=figsize)
+    fig.suptitle(title, fontsize=15, fontweight='bold', y=0.95)
+    if ratio is None:
+        wr = (nx, ny)
+        hr = (nx, nt)
+    else:
+        wr = ratio[0]
+        hr = ratio[1]
+
+    if whspace is None:
+        whspace = (0., 0.)
+
+    opts = dict(cmap=cmap, vmin=vmin, vmax=vmax, 
+                clim=clipval if clipval is not None else clim(volume, p))
+    opts2 = dict(aspect=1.)
+    
+    gs = fig.add_gridspec(2, 2, width_ratios=wr, height_ratios=hr,
+                          left=0.1, right=0.9, bottom=0.1, top=1.0,
+                          wspace=whspace[0], hspace=whspace[1])
+    
+    ax = fig.add_subplot(gs[1, 0])
+    ax_top = fig.add_subplot(gs[0, 0], sharex=ax)
+    ax_right = fig.add_subplot(gs[1, 1], sharey=ax)
+    ax_ = fig.add_subplot(gs[0, 1], sharex=ax_right, sharey=ax_top)
+    ax_.axis('off')
+    ax.axis('tight')
+
+    # central plot
+    ax.imshow(volume[:, :, y], extent=[xlim[0], xlim[1], tlim[1], tlim[0]], **opts, **opts2)
+    ax.axvline(x=xline, **linespec)
+    ax.axhline(y=tline, **linespec)
+    ax.axis('tight')
+
+    # top plot
+    ax_top.imshow(volume[t].T, extent=[xlim[0], xlim[1], ylim[1], ylim[0]], **opts)
+    ax_top.axvline(x=xline, **linespec)
+    ax_top.axhline(y=yline, **linespec)
+    ax_top.sharex(ax)
+    ax_top.invert_yaxis()
+    
+    # right plot
+    ax_right.imshow(volume[:, x], extent=[ylim[0], ylim[1], tlim[1], tlim[0]], **opts, **opts2)
+    ax_right.axvline(x=yline, **linespec)
+    ax_right.axhline(y=tline, **linespec)
+    ax_right.axis('tight')
+    
+    # labels
+    ax_top.tick_params(axis="x", labelbottom=False)
+    ax_right.tick_params(axis="y", labelleft=False)
+    ax.set_xlabel("crossline " + x_label)
+    ax.set_ylabel(tlabel + " " + t_label)
+    ax_right.set_xlabel("inline " + y_label)
+    ax_top.set_ylabel("inline " + y_label)
+
+    cbar_ax = fig.add_axes([0.6, 0.7, 0.02, 0.15])
+    cbar_ax.set_title(colorbar_title, fontsize=10, loc='left')
+    plt.colorbar(ax.images[0], cax=cbar_ax)
+    fig.tight_layout()
+    
+    if filename is not None:
+        if save_opts is None:
+            save_opts = {'format': 'png', 'dpi': 150, 'bbox_inches': 'tight'}
+        plt.savefig(f"{filename}.{save_opts['format']}", **save_opts)
+    return fig, (ax, ax_top, ax_right)
+
+
+def plot_loss(
+    epoch_losses: List[float], 
+    snrs: List[float], 
+    snrs_std: List[float], 
+    filename: Optional[Union[str, Path]] = None
+) -> None:
+    """Plot loss and SNR curves over epochs.
+
+    Parameters
+    ----------
+    epoch_losses : list of float
+        A list of loss values for each epoch.
+    snrs : list of float
+        A list of SNR values for the mean estimate at each epoch.
+    snrs_std : list of float
+        A list of SNR values for the standard deviation at each epoch.
+    filename : str or Path, optional
+        Path to save the figure. If None, the plot is not saved.
+        Default is None.
+    """
+    fig, ax = plt.subplots(1,3, figsize=(12,3))
+    ax[0].plot(epoch_losses, 'k')
+    ax[0].set_xlabel('# Iterations')
+    ax[0].set_title('Total loss')
+    ax[1].plot(snrs, 'k')
+    ax[1].set_xlabel('# Iterations')
+    ax[1].set_ylim(0,25)
+    ax[1].set_title('SNR mean')
+    ax[2].plot(snrs_std, 'k')
+    ax[2].set_xlabel('# Iterations')
+    ax[2].set_title('SNR std')
+    if filename is not None:
+        plt.savefig(filename, bbox_inches='tight')
+    plt.close()

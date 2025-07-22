@@ -12,6 +12,8 @@ Thumbs.db
 static/*
 db.sqlite3
 .eggs
+.vscode/
+dcgm/
 
 # Build #
 build
@@ -32,7 +34,10 @@ notebooks/backup/
 notebooks/slurm*
 notebooks/*.slurm
 notebooks/dcgm/
+notebooks/sleipner/
 results/
+scripts/
+*.out
 .vscode/
 
 

@@ -1,25 +1,26 @@
-name: strainprox
+name: strainprox2
 channels:
   - pytorch
   - conda-forge
   - defaults
+  - rapidsai
+  - nvidia
 dependencies:
-  - python=3.8.5
+  - python=3.11
   - pip
-  - numpy=1.19.2
-  - scipy=1.5.2
-  - matplotlib=3.5.3
-  - jupyter=1.0.0
-  - ipywidgets=7.7.2
-  - scikit-learn=1.0.2
-  - typing_extensions=4.3.0
-  - pandas=1.4.4
-  - fonts-conda-forge
-  - fonts-conda-ecosystem
-  - pip:
-    - pylops==2.1.0
-    - pyproximal==0.9.0
-    - tqdm==4.64.1
-    - pytest==7.2.0
-
-
+  - numpy
+  - segyio
+  - scipy
+  - matplotlib
+  - jupyter
+  - ipywidgets
+  - cupy
+  - cusignal
+  - pylops
+  - pyproximal
+  - pytorch==2.5.1
+  - pytorch-cuda=11.8
+  - torchvision
+  - torchaudio
+  - torchinfo
+  
