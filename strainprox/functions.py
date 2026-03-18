@@ -95,7 +95,7 @@ def strain_jis(d, Op, x0, ui,  dims, cl,
 
     # TV regularization term
     Dop = Gradient(dims=dims, edge=True, dtype='float32', kind='forward')
-    l1 = L21(ndim=2, sigma=alpha)
+    l1 = L21(ndim=len(dims), sigma=alpha)
     v = np.zeros(ncl * msize)
 
     if bregman:
@@ -128,7 +128,7 @@ def strain_jis(d, Op, x0, ui,  dims, cl,
             # define misfit term
             v = v.reshape((msize, ncl))         
             L1op = VStacklop([Op] + [Diagonal(np.sqrt(2.*delta)*np.sqrt(v[:, icl])) for icl in range(ncl)])
-            d1 = np.hstack([d.ravel(), np.sqrt(2.*delta)*(np.sqrt(v).T).ravel() * ((ui[:, None] - cl).T).ravel()])
+            d1 = np.hstack([d.ravel(), -np.sqrt(2.*delta)*(np.sqrt(v).T).ravel() * ((ui[:, None] - cl).T).ravel()])
             l2 = L2(Op=L1op, b=d1, niter=l2niter, warm=True, q=p if bregman else None, alpha=-alpha if bregman else None)
 
         # solve
@@ -160,7 +160,7 @@ def strain_jis(d, Op, x0, ui,  dims, cl,
         ################
         # Segmentation #
         ################
-        v, vcl = Segment(ui, cl, 2 * delta, 2 * beta, z=(-beta * q if bregman else None),
+        v, vcl = Segment_(ui, cl, 2 * delta, 2 * beta, z=(-beta * q if bregman else None),
                         niter=segmentniter, callback=None, show=show,
                         kwargs_simplex=dict(engine='numba',
                                             maxiter=bisectniter, call=False))
@@ -187,7 +187,10 @@ def strain_jis(d, Op, x0, ui,  dims, cl,
         if np.linalg.norm(v.ravel()-v_old.ravel()) < tolstop:
             break
 
-    return ui, v, vcl, (xerr if utrue is not None else None), (xsnr if utrue is not None else None)
+    if utrue is None:
+        return du, ui, v, vcl
+    else:
+        return du, ui, v, vcl, xerr, xsnr
 
 
 
@@ -280,15 +283,13 @@ def strain_jis_cp(d, Op, x0, ui,  dims, cl,
 
     # TV regularization term
     Dop = Gradient(dims=dims, edge=True, dtype='float32', kind='forward')
-    l1 = L21(ndim=2, sigma=alpha)
+    l1 = L21(ndim=len(dims), sigma=alpha)
     v = cp.zeros(ncl * msize)
 
     if bregman:
         p = cp.zeros(msize)
         q = cp.zeros(ncl * msize)
-    
-    # u_hist = []
-    # v_hist = []
+
     if utrue is not None:
         xhist, xsnr, xerr = [], [], []
 
@@ -299,10 +300,6 @@ def strain_jis_cp(d, Op, x0, ui,  dims, cl,
         print('Iteration %d...' % iiter)
         ui_old, v_old = ui.copy(), v.copy()
 
-    
-        # Gradient on the previous estimate
-        # gu = Dop * cp.asnumpy(ui)   
-
         #############
         # Inversion #
         #############
@@ -312,20 +309,20 @@ def strain_jis_cp(d, Op, x0, ui,  dims, cl,
         else:
             # define misfit term
             v = v.reshape((msize, ncl))         
-            L1op = VStacklop([Op] + [Diagonal(np.sqrt(2.*delta)*np.sqrt(v[:, icl])) for icl in range(ncl)])
-            d1 = np.hstack([d.ravel(), np.sqrt(2.*delta)*(np.sqrt(v).T).ravel() * ((ui[:, None] - cl).T).ravel()])
+            L1op = VStacklop([Op] + [Diagonal(cp.sqrt(2.*delta)*cp.sqrt(v[:, icl])) for icl in range(ncl)])
+            d1 = cp.hstack([d.ravel(), -cp.sqrt(2.*delta)*(cp.sqrt(v).T).ravel() * ((ui[:, None] - cl).T).ravel()])
             l2 = L2(Op=L1op, b=d1, niter=l2niter, warm=True, q=p if bregman else None, alpha=-alpha if bregman else None)
 
         # solve
+        gu = Dop * cp.asnumpy(ui)
+        l1prec = l1.precomposition(a=1., b=gu)
+        l1prec.b = cp.asarray(l1prec.b)
         if utrue is not None:
-            du = PrimalDual(proxf=l2, proxg=l1.precomposition(a=1., b=gu), A=Dop, 
+            du = PrimalDual(proxf=l2, proxg=l1prec, A=Dop,
                     tau=tau, mu=mu, theta=1., x0=x0, niter=pdniter,
                 callback=lambda xx:callbackx(xx.copy(), ui.copy(), utrue.ravel(), xhist, xsnr, xerr), 
                 show=False)
         else:
-            gu = Dop * cp.asnumpy(ui)
-            l1prec = l1.precomposition(a=1., b=gu)
-            l1prec.b = cp.asarray(l1prec.b)
             du = PrimalDual(proxf=l2, proxg=l1prec, A=Dop, 
                 tau=tau, mu=mu, theta=1., x0=x0, niter=pdniter,
                 show=show)
@@ -333,47 +330,193 @@ def strain_jis_cp(d, Op, x0, ui,  dims, cl,
 
         if bregman:
             l2_grad = L2(Op=(Op if iiter == 0 else L1op), b=(d.ravel() if iiter == 0 else d1))
-            p -= np.real((1. / alpha) * l2_grad.grad(du))
-
-        # u_hist.append(ui.copy())
+            p -= cp.real((1. / alpha) * l2_grad.grad(du))
 
         if plotflag:
+            ui_np = cp.asnumpy(ui).real.reshape(dims)
             if niter==1:
-                axs[0].imshow(np.real(ui).reshape(dims), 'gray')
+                axs[0].imshow(ui_np, 'gray')
                 axs[0].axis('tight')
             else:
-                axs[0, iiter].imshow(np.real(ui).reshape(dims), 'gray')
+                axs[0, iiter].imshow(ui_np, 'gray')
                 axs[0, iiter].axis('tight')
 
         ################
         # Segmentation #
         ################
-        v, vcl = Segment(ui, cl, 2 * delta, 2 * beta, z=(-beta * q if bregman else None),
-                        x0=cp.zeros(len(dims)*np.prod(dims)),
+        v, vcl = Segment_(ui, cl, 2 * delta, 2 * beta, z=(-beta * q if bregman else None),
                         niter=segmentniter, callback=None, show=show,
                         kwargs_simplex=dict(maxiter=bisectniter, call=False, engine='cuda'))
-        # v_hist.append(v)
 
         # Update q
         if bregman:
             q -= (delta / beta) * ((ui.ravel() - cl[:, np.newaxis]) ** 2).ravel()
 
         if plotflag:
+            vcl_np = cp.asnumpy(vcl).reshape(dims)
             if niter==1:
-                axs[1].imshow(vcl.reshape(dims), 'gray')
+                axs[1].imshow(vcl_np, 'gray')
                 axs[1].axis('tight')
             else:    
-                axs[1, iiter].imshow(vcl.reshape(dims), 'gray')
+                axs[1, iiter].imshow(vcl_np, 'gray')
                 axs[1, iiter].axis('tight')
 
         # Monitor cost functions
+        v_diff = float(cp.linalg.norm(v.ravel() - v_old.ravel()))
+        u_diff = float(cp.linalg.norm(ui.ravel() - ui_old.ravel()))
         print('f=', L2(Op=Op, b=d.ravel())(ui))
-        print('||v-v_old||_2=', np.linalg.norm(v.ravel() - v_old.ravel()))
-        print('||m-m_old||_2=', np.linalg.norm(ui.ravel() - ui_old.ravel()))
+        print('||v-v_old||_2=', v_diff)
+        print('||m-m_old||_2=', u_diff)
 
-        # Check stopping criterion
-        if np.linalg.norm(v.ravel()-v_old.ravel()) < tolstop:
+        if v_diff < tolstop:
             break
 
-    return ui, v, vcl, (xerr if utrue is not None else None), (xsnr if utrue is not None else None)
+    if utrue is None:
+        return du, ui, v, vcl
+    else:
+        return du, ui, v, vcl, xerr, xsnr
 
+#################################################################3
+# test
+
+from typing import Any, Callable, Dict, Optional, Tuple
+
+import numpy as np
+from pylops import BlockDiag, Gradient
+from pylops.utils.typing import NDArray
+
+from pyproximal import L21, Simplex, VStack
+from pyproximal.optimization.primaldual import PrimalDual
+
+
+def Segment_(
+    y: NDArray,
+    cl: NDArray,
+    sigma: float,
+    alpha: float,
+    clsigmas: Optional[NDArray] = None,
+    z: Optional[NDArray] = None,
+    niter: int = 10,
+    x0: Optional[NDArray] = None,
+    callback: Optional[Callable[[NDArray], None]] = None,
+    show: bool = False,
+    kwargs_simplex: Optional[Dict[str, Any]] = None,
+) -> Tuple[NDArray, NDArray]:
+    r"""Primal-dual algorithm for image segmentation
+
+    Perform image segmentation over :math:`N_{cl}` classes using the
+    general version of the first-order primal-dual algorithm [1]_.
+
+    Parameters
+    ----------
+    y : :obj:`np.ndarray`
+        Image to segment (must have 2 or more dimensions)
+    cl : :obj:`numpy.ndarray`
+        Classes
+    sigma : :obj:`float`
+        Positive scalar weight of the misfit term
+    alpha : :obj:`float`
+        Positive scalar weight of the regularization term
+    clsigmas : :obj:`numpy.ndarray`, optional
+        Classes standard deviations
+    z : :obj:`numpy.ndarray`, optional
+        Additional vector
+    niter : :obj:`int`, optional
+        Number of iterations of iterative scheme
+    x0 : :obj:`numpy.ndarray`, optional
+        Initial vector
+    callback : :obj:`callable`, optional
+        Function with signature (``callback(x)``) to call after each iteration
+        where ``x`` is the current model vector
+    show : :obj:`bool`, optional
+        Display iterations log
+    kwargs_simplex : :obj:`dict`, optional
+        Arbitrary keyword arguments for
+        :py:func:`pyproximal.Simplex` operator
+
+    Returns
+    -------
+    x : :obj:`numpy.ndarray`
+        Classes probabilities. This is a vector of size :math:`N_{dim} \times
+        N_{cl}` whose columns contain the probability for each pixel to be in
+        the class :math:`c_i`
+    cl : :obj:`numpy.ndarray`
+        Estimated classes. This is a vector of the same size of the input data
+        ``y`` with the selected classes at each pixel.
+
+    Notes
+    -----
+    This solver performs image segmentation over :math:`N_{cl}` classes solving
+    the following nonlinear minimization problem using the general version of
+    the first-order primal-dual algorithm of [1]_:
+
+    .. math::
+
+        \min_{\mathbf{x} \in X} \frac{\sigma}{2} \mathbf{x}^T \mathbf{f} +
+        \mathbf{x}^T \mathbf{z} + \frac{\alpha}{2}||\nabla \mathbf{x}||_{2,1}
+
+    where :math:`X=\{ \mathbf{x}: \sum_{i=1}^{N_{cl}} x_i = 1,\; x_i \geq 0 \}`
+    is a simplex and :math:`\mathbf{f}=[\mathbf{f}_1, ...,
+    \mathbf{f}_{N_{cl}}]^T` with :math:`\mathbf{f}_i = |\mathbf{y}-c_i|^2/\sigma_i`.
+    Here :math:`\mathbf{c}=[c_1, ..., c_{N_{cl}}]^T` and
+    :math:`\mathbf{\sigma}=[\sigma_1, ..., \sigma_{N_{cl}}]^T` are vectors
+    representing the optimal mean and standard deviations for each class.
+
+    .. [1] Chambolle, and A., Pock, "A first-order primal-dual algorithm for
+        convex problems with applications to imaging", Journal of Mathematical
+        Imaging and Vision, 40, 8pp. 120–145. 2011.
+
+    """
+    kwargs_simplex = {} if kwargs_simplex is None else kwargs_simplex
+
+    dims = y.shape
+    ndims = len(dims)
+    dimsprod = np.prod(np.array(dims))
+    ncl = len(cl)
+
+    # Data (difference between image and center of classes)
+    g = sigma / 2.0 * (y.reshape(1, dimsprod) - cl[:, np.newaxis]) ** 2
+    if clsigmas is not None:
+        g /= clsigmas[:, np.newaxis]
+    g = g.ravel()
+
+    # Gradient operator
+    sampling = 1.0
+    Gop = Gradient(
+        dims=dims, sampling=sampling, edge=False, kind="forward", dtype="float64"
+    )
+    Gop = BlockDiag([Gop] * ncl)
+
+    # Simplex and L21 proximal operators
+    simp = Simplex(
+        dimsprod * ncl, radius=1, dims=(ncl, dimsprod), axis=0, **kwargs_simplex
+    )
+    l21 = VStack(
+        [L21(ndim=ndims, sigma=0.5 * alpha)] * ncl, nn=[ndims * dimsprod] * ncl
+    )
+
+    # Steps
+    L = 8.0 / sampling**2
+    tau = 0.7
+    mu = 1.0 / (tau * L)
+
+    # Inversion
+    x: NDArray = PrimalDual(
+        simp,
+        l21,
+        Gop,
+        tau=tau,
+        mu=mu,
+        z=g if z is None else g + z,
+        theta=1.0,
+        x0=np.zeros_like(g) if x0 is None else x0,
+        niter=niter,
+        callback=callback,
+        show=show,
+        returny=False,
+    )
+    x = x.reshape(ncl, dimsprod).T
+    cl = np.argmax(x, axis=1)
+    cl = cl.reshape(dims)
+
+    return x, cl

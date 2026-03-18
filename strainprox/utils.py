@@ -7,6 +7,146 @@ from typing import List, Tuple, Optional, Union, Callable, Dict, Any
 from pathlib import Path
 import cupy as cp
 
+
+#########################
+# Metrics
+#########################
+
+def _to_float_arrays(pred, gt):
+    pred = np.asarray(pred, dtype=np.float64)
+    gt   = np.asarray(gt, dtype=np.float64)
+    # Allow broadcasting (e.g., gt (H,W) vs pred (N,H,W))
+    pred, gt = np.broadcast_arrays(pred, gt)
+    return pred, gt
+
+def roi(gt, alpha: float = 0.05) -> np.ndarray:
+    """
+    ROI mask from ground truth magnitude:
+        M = {|gt| >= alpha * max(|gt|)}
+    """
+    gt = np.asarray(gt, dtype=np.float64)
+    tau = alpha * np.max(np.abs(gt))
+    return np.abs(gt) >= tau
+
+def rmse(pred, gt) -> float:
+    pred, gt = _to_float_arrays(pred, gt)
+    err = pred - gt
+    return float(np.sqrt(np.mean(err * err)))
+
+def mae(pred, gt) -> float:
+    pred, gt = _to_float_arrays(pred, gt)
+    return float(np.mean(np.abs(pred - gt)))
+
+def roi_rmse(pred, gt, roi_mask: np.ndarray) -> float:
+    pred, gt = _to_float_arrays(pred, gt)
+    roi_mask = np.asarray(roi_mask, dtype=bool)
+    roi_mask = np.broadcast_to(roi_mask, pred.shape)  # allow broadcasting masks
+    err = pred - gt
+    n = int(np.sum(roi_mask))
+    if n == 0:
+        return float("nan")
+    return float(np.sqrt(np.sum((err[roi_mask]) ** 2) / n))
+
+def roi_mae(pred, gt, roi_mask: np.ndarray) -> float:
+    pred, gt = _to_float_arrays(pred, gt)
+    roi_mask = np.asarray(roi_mask, dtype=bool)
+    roi_mask = np.broadcast_to(roi_mask, pred.shape)
+    err = np.abs(pred - gt)
+    n = int(np.sum(roi_mask))
+    if n == 0:
+        return float("nan")
+    return float(np.sum(err[roi_mask]) / n)
+
+def ble(pred, roi_mask: np.ndarray) -> float:
+    """
+    Background Leakage Energy (assuming GT ~ 0 in background):
+        Leak_out = sqrt( mean_{i in ~M} pred_i^2 )
+
+    If you want leakage of the *error* instead, call with pred=(pred-gt).
+    """
+    pred = np.asarray(pred, dtype=np.float64)
+    roi_mask = np.asarray(roi_mask, dtype=bool)
+    pred = np.asarray(pred, dtype=np.float64)
+    pred, roi_mask = np.broadcast_arrays(pred, roi_mask)
+
+    bg = ~roi_mask
+    n = int(np.sum(bg))
+    if n == 0:
+        return float("nan")
+    return float(np.sqrt(np.mean(pred[bg] ** 2)))
+
+def dice(
+    pred,
+    gt,
+    alpha: float = 0.05,
+    use_lcc: bool = False,
+) -> float:
+    """
+    Dice overlap between GT anomaly mask and predicted anomaly mask.
+    Threshold is set from GT: tau = alpha * max(|gt|).
+      M      = {|gt|   >= tau}
+      M_hat  = {|pred| >= tau}
+
+    If use_lcc=True, you can optionally keep only the largest connected component
+    (requires scipy; see note below).
+    """
+    pred, gt = _to_float_arrays(pred, gt)
+    tau = alpha * np.max(np.abs(gt))
+    M = np.abs(gt) >= tau
+    Mhat = np.abs(pred) >= tau
+
+    if use_lcc:
+        # Optional: keep largest connected component (2D/3D only).
+        # Requires: from scipy.ndimage import label
+        from scipy.ndimage import label
+
+        def lcc(mask: np.ndarray) -> np.ndarray:
+            lab, nlab = label(mask)
+            if nlab == 0:
+                return mask
+            sizes = np.bincount(lab.ravel())
+            sizes[0] = 0  # background
+            keep = sizes.argmax()
+            return lab == keep
+
+        M = lcc(M)
+        Mhat = lcc(Mhat)
+
+    inter = np.logical_and(M, Mhat).sum(dtype=np.float64)
+    denom = M.sum(dtype=np.float64) + Mhat.sum(dtype=np.float64)
+    if denom == 0:
+        return 1.0
+    return float(2.0 * inter / denom)
+
+def compute_all_metrics(
+    pred,
+    gt,
+    alpha: float = 0.05,
+    roi_mask: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    """
+    Convenience wrapper. If roi_mask is None, it is built from GT using alpha.
+    """
+    if isinstance(pred, cp.ndarray):
+        pred = cp.asnumpy(pred)
+    if isinstance(gt, cp.ndarray):
+        gt = cp.asnumpy(gt)
+    if isinstance(roi_mask, cp.ndarray):
+        roi_mask = cp.asnumpy(roi_mask)
+
+    if roi_mask is None:
+        roi_mask = roi(gt, alpha=alpha)
+
+    return {
+        "global_rmse": rmse(pred, gt),
+        "global_mae": mae(pred, gt),
+        "roi_rmse": roi_rmse(pred, gt, roi_mask),
+        "roi_mae": roi_mae(pred, gt, roi_mask),
+        "bg_leakage": ble(pred, roi_mask),
+        "dice": dice(pred, gt, alpha=alpha),
+    }
+
+
 def callbackx(x: np.ndarray, ui: np.ndarray, xtrue: np.ndarray, 
               xhist: List[np.ndarray], xsnr: List[float], xerr: List[float]) -> None:
     """
@@ -195,7 +335,7 @@ def plotter_4D(b: np.ndarray, m: np.ndarray, dt: float = 1.0,
                dif_scale: float = 0.01, ref: Optional[np.ndarray] = None,
                height: float = 4.0, width: float = 15.0, 
                mtrue: Optional[np.ndarray] = None, 
-               cmap: str = 'seismic_r', vline: Optional[int] = None, 
+               cmap: str = 'RdGy', vline: Optional[int] = None, 
                ztitle: str = '') -> None:
     """
     Create a 4D visualization comparing baseline and monitor data.
@@ -229,6 +369,15 @@ def plotter_4D(b: np.ndarray, m: np.ndarray, dt: float = 1.0,
     ztitle : str, optional
         Z-axis title, by default ''
     """
+    if isinstance(b, cp.ndarray):
+        b = cp.asnumpy(b)
+    if isinstance(m, cp.ndarray):
+        m = cp.asnumpy(m)
+    if isinstance(ref, cp.ndarray):
+        ref = cp.asnumpy(ref)
+    if isinstance(mtrue, cp.ndarray):
+        mtrue = cp.asnumpy(mtrue)
+
     if ref is not None:
         vmin, vmax = np.percentile(ref, [perc, 100 - perc])
     else:
@@ -338,6 +487,15 @@ def plotter_timeshift(d1: np.ndarray, d2: np.ndarray, d2s: np.ndarray, shift: np
     cmap : str, optional
         Colormap for seismic data, by default 'RdGy'
     """
+    if isinstance(d1, cp.ndarray):
+        d1 = cp.asnumpy(d1)
+    if isinstance(d2, cp.ndarray):
+        d2 = cp.asnumpy(d2)
+    if isinstance(d2s, cp.ndarray):
+        d2s = cp.asnumpy(d2s)
+    if isinstance(shift, cp.ndarray):
+        shift = cp.asnumpy(shift)
+
     vmin, vmax = np.percentile(d1, [perc, 100 - perc])
 
     fig = plt.figure(figsize=(width, height))
@@ -673,3 +831,268 @@ def plot_loss(
     if filename is not None:
         plt.savefig(filename, bbox_inches='tight')
     plt.close()
+
+def strain_shift(strain, shift, 
+                vmin_strain: float = -0.1, vmax_strain: float = 0.1, 
+                vmin_shift: float = -0.03, vmax_shift: float = 0.03,
+                title_strain: str = 'time strain', title_shift: str = 'time shift',
+                filename: Optional[str] = None):
+    """
+    Plot time strain and time shift side by side.
+
+    Args:
+        strain: 2D array for time strain.
+        shift: 2D array for time shift.
+        vmin_strain: float, optional
+        vmax_strain: float, optional
+        vmin_shift: float, optional
+        vmax_shift: float, optional
+        title_strain: str, optional
+        title_shift: str, optional
+        filename: str, optional. If provided, save figure to this path instead of showing.
+    """
+    if isinstance(strain, cp.ndarray):
+        strain = cp.asnumpy(strain)
+    if isinstance(shift, cp.ndarray):
+        shift = cp.asnumpy(shift)
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+
+    # Left: time strain
+    im0 = axes[0].imshow(strain, cmap='PiYG', vmin=vmin_strain, vmax=vmax_strain)
+    axes[0].set_title(title_strain)
+    axes[0].axis('tight')
+    fig.colorbar(im0, ax=axes[0], shrink=0.5)
+
+    # Right: time shift
+    im1 = axes[1].imshow(shift, cmap='seismic', vmin=vmin_shift, vmax=vmax_shift)
+    axes[1].set_title(title_shift)
+    axes[1].axis('tight')
+    fig.colorbar(im1, ax=axes[1], shrink=0.5)
+
+    if filename is not None:
+        fig.savefig(filename, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def results_grid(
+    utrue: np.ndarray,
+    tautrue: np.ndarray,
+    d1: np.ndarray,
+    d2: np.ndarray,
+    methods: Dict[str, Dict[str, np.ndarray]],
+    dims: Tuple[int, ...],
+    dt: float,
+    *,
+    figsize: Tuple[float, float] = (15, 20),
+    strain_limits: Tuple[float, float] = (-0.1, 0.1),
+    shift_limits: Tuple[float, float] = (-0.03, 0.03),
+    amp_limits: Tuple[float, float] = (-0.1, 0.1),
+    cmap_seis: str = 'RdGy'
+) -> plt.Figure:
+    """
+    Plot a 5x3 grid: rows = [Ground truth, TK, TKST, TV, JIS], cols = [time strain, time shift, difference].
+
+    Parameters
+    ----------
+    utrue : np.ndarray
+        Ground-truth time strain field (flattened or shaped to `dims`).
+    d1 : np.ndarray
+        Baseline seismic (shaped to `dims`).
+    d2 : np.ndarray
+        Original monitor seismic (shaped to `dims`), used to derive corrected monitors if not provided.
+    methods : Dict[str, Dict[str, np.ndarray]]
+        Dictionary keyed by method identifier ('tk', 'tkst', 'tv', 'jis').
+        Each value is a dict with:
+            - 'strain': np.ndarray, time strain estimate
+            - 'shift': np.ndarray, time shift estimate
+            - 'd2s': np.ndarray, corrected monitor seismic
+            - 'strain_roi_mae': float, ROI MAE for time strain
+            - 'shift_roi_mae': float, ROI MAE for time shift
+    dims : tuple
+        Target 2D or 3D dimensions (nt, nx[, ny]) for reshaping.
+    dt : float
+        Time sampling interval in seconds.
+    figsize : tuple, optional
+        Figure size in inches. Default: (15, 12).
+    strain_limits : tuple, optional
+        vmin, vmax for time strain plots. Default: (-0.1, 0.1).
+    shift_limits : tuple, optional
+        vmin, vmax for time shift plots. Default: (-0.03, 0.03).
+    amp_limits : tuple, optional
+        vmin, vmax for seismic amplitude differences. Default: (-0.1, 0.1).
+    cmap_seis : str, optional
+        Colormap for seismic images. Default: 'RdGy'.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The created figure.
+    """
+    method_labels = {'tk': 'TK', 'tkst': 'TKST', 'tv': 'TV', 'jis': 'JIS'}
+    method_order = ['tk', 'tkst', 'tv', 'jis']
+
+    def as_img(arr: np.ndarray) -> np.ndarray:
+        return arr.reshape(dims)
+
+    t = np.arange(dims[0]) * dt
+
+    rows: List[Dict[str, Any]] = []
+
+    # Ground truth row
+    shift_true = as_img(tautrue)
+    d2_true = apply_time_shift(d2, shift_true, t, dims)
+    rows.append(dict(name='Ground truth', u=utrue, shift=shift_true, d2s=d2_true))
+
+    # Method rows in fixed order
+    for key in method_order:
+        if key not in methods:
+            continue
+        m = methods[key]
+        rows.append(dict(
+            name=method_labels.get(key, key.upper()),
+            u=m['strain'],
+            shift=as_img(m['shift']),
+            d2s=m['d2s'],
+            strain_roi_mae=m['strain_roi_mae'][-1],
+            shift_roi_mae=m['shift_roi_mae'][-1],
+        ))
+
+    # Prepare figure with 5 rows x 3 columns
+    nrows = 5
+    ncols = 3
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize, constrained_layout=True)
+    if nrows == 1:
+        axes = np.array([axes])  # ensure 2D indexing
+
+    # Column headers on first row
+    col_titles = ['Time strain', 'Time shift', 'Monitor(s) - Baseline']
+
+    # Determine how many rows we will actually draw (cap at 5)
+    used_rows = min(len(rows), nrows)
+
+    for j, title in enumerate(col_titles):
+        axes[0, j].set_title(title)
+
+    for i in range(nrows):
+        if i < used_rows:
+            row = rows[i]
+            u_img = as_img(row['u'])
+            shift_img = row['shift']
+            diff_img = d1 - row['d2s']
+
+            # Time strain
+            ax = axes[i, 0]
+            im0 = ax.imshow(u_img, cmap='PiYG', vmin=strain_limits[0], vmax=strain_limits[1],
+                            extent=(0, dims[1], dims[0] * dt, 0))
+            ax.axis('tight')
+            ax.set_ylabel('TWT $[s]$')
+            if row['name'] == 'Ground truth':
+                ax.set_title(f"{row['name']}")
+            else:
+                ax.set_title(f"{row['name']} | MAE: {row['strain_roi_mae']:.4f}")
+
+            # Time shift
+            ax = axes[i, 1]
+            im1 = ax.imshow(shift_img, cmap='seismic', vmin=shift_limits[0], vmax=shift_limits[1],
+                            extent=(0, dims[1], dims[0] * dt, 0))
+            ax.axis('tight')
+            ax.set_yticklabels([])
+            if row['name'] != 'Ground truth':
+                ax.set_title(f"MAE: {row['shift_roi_mae']:.4f}")
+
+            # Difference
+            ax = axes[i, 2]
+            im2 = ax.imshow(diff_img, cmap=cmap_seis, vmin=amp_limits[0], vmax=amp_limits[1],
+                            extent=(0, dims[1], dims[0] * dt, 0))
+            ax.axis('tight')
+            ax.set_yticklabels([])
+        else:
+            # Hide unused rows
+            for j in range(ncols):
+                axes[i, j].axis('off')
+
+    plt.close(fig)
+    return fig
+
+
+def metrics_comparison(
+    methods: Dict[str, Dict[str, np.ndarray]],
+    *,
+    figsize: Tuple[float, float] = (8, 16),
+    log_interval: int = 1,
+) -> plt.Figure:
+    """
+    Plot 12 metric convergence curves (4x3 grid) comparing methods.
+
+    Parameters
+    ----------
+    methods : Dict[str, Dict[str, np.ndarray]]
+        Dictionary keyed by method identifier ('tk', 'tkst', 'tv', 'jis').
+        Each value must contain 1-D arrays for:
+            'shift_global_rmse', 'shift_roi_rmse', 'shift_global_mae',
+            'shift_roi_mae', 'shift_bg_leakage', 'shift_dice',
+            'strain_global_rmse', 'strain_roi_rmse', 'strain_global_mae',
+            'strain_roi_mae', 'strain_bg_leakage', 'strain_dice'
+    figsize : tuple, optional
+        Figure size in inches. Default: (18, 16).
+    log_interval : int, optional
+        Iteration spacing between logged values. Default: 10.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The created figure.
+    """
+    metric_keys = [
+        'shift_global_rmse', 'shift_roi_rmse', 'shift_global_mae',
+        'shift_roi_mae', 'shift_bg_leakage', 'shift_dice',
+        'strain_global_rmse', 'strain_roi_rmse', 'strain_global_mae',
+        'strain_roi_mae', 'strain_bg_leakage', 'strain_dice',
+    ]
+    metric_labels = {
+        'shift_global_rmse': 'Shift Global RMSE',
+        'shift_roi_rmse': 'Shift ROI RMSE',
+        'shift_global_mae': 'Shift Global MAE',
+        'shift_roi_mae': 'Shift ROI MAE',
+        'shift_bg_leakage': 'Shift BG Leakage',
+        'shift_dice': 'Shift Dice',
+        'strain_global_rmse': 'Strain Global RMSE',
+        'strain_roi_rmse': 'Strain ROI RMSE',
+        'strain_global_mae': 'Strain Global MAE',
+        'strain_roi_mae': 'Strain ROI MAE',
+        'strain_bg_leakage': 'Strain BG Leakage',
+        'strain_dice': 'Strain Dice',
+    }
+    method_labels = {'tk': 'TK', 'tkst': 'TKST', 'tv': 'TV', 'jis': 'JIS'}
+    method_order = ['tk', 'tkst', 'tv', 'jis']
+
+    
+
+    fig, axes = plt.subplots(nrows=6, ncols=2, figsize=figsize, constrained_layout=True)
+
+    for idx, key in enumerate(metric_keys):
+        ax = axes[idx // 2, idx % 2]
+        xmin = 0
+        xmax = 25
+        ax.set_xlim(xmin, xmax)
+
+        vals_all = np.concatenate([np.asarray(methods[m][key][xmin:xmax]) for m in method_order if m in methods and key in methods[m]])
+        ax.set_ylim(vals_all.min() * 0.9, vals_all.max() * 1.1)
+
+        for mkey in method_order:
+            if mkey not in methods or key not in methods[mkey]:
+                continue
+            vals = np.asarray(methods[mkey][key])
+            iters = np.arange(1, len(vals) + 1) * log_interval
+            ax.plot(iters, vals, label=method_labels.get(mkey, mkey.upper()))
+        ax.set_title(metric_labels[key])
+        ax.set_xlabel('Iteration')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+            
+
+    plt.close(fig)
+    return fig

@@ -30,6 +30,8 @@ data/Hess/Hess_*
 data/Hess/tim*
 notebooks/hess/strain_inversion_Hess_*
 notebooks/hess/strain_paper*
+notebooks/hess/backup/
+notebooks/hess/logs/
 notebooks/backup/
 notebooks/slurm*
 notebooks/*.slurm
