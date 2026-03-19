@@ -7,19 +7,19 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --partition=batch
-#SBATCH --array=0-255
+#SBATCH --array=0-3
 
 conda activate strainprox2
 
 # ---- Grid definition ----
-MU_VALUES=(0.5 1.0)
-ALPHA_VALUES=(5.0 10.0)
-BETA_VALUES=(5.0 10.0)
-DELTA_VALUES=(5.0 10.0)
-NITER_VALUES=(2 4)
-PDNITER_VALUES=(10 20)
-SEGNITER_VALUES=(10 20)
-BISNITER_VALUES=(10 20)
+MU_VALUES=(0.1 0.2)
+ALPHA_VALUES=(5.0)
+BETA_VALUES=(5.0)
+DELTA_VALUES=(3.0 5.0)
+NITER_VALUES=(2)
+PDNITER_VALUES=(10)
+SEGNITER_VALUES=(10)
+BISNITER_VALUES=(10)
 
 
 N_MU=${#MU_VALUES[@]}
@@ -59,7 +59,7 @@ echo "Task ${SLURM_ARRAY_TASK_ID}: mu=${MU} alpha=${ALPHA} beta=${BETA} delta=${
 # ---- Setup ----
 cd ${SLURM_SUBMIT_DIR}
 mkdir -p logs
-mkdir -p ../results/hess/grid_search2
+mkdir -p ../results/hess/grid_search3
 
 # ---- Run ----
 python loop.py \
@@ -71,4 +71,4 @@ python loop.py \
     --pdniter ${PDNITER} \
     --segmentniter ${SEGNITER} \
     --bisectniter ${BISNITER} \
-    --outdir ../results/hess/grid_search
+    --outdir ../results/hess/grid_search3

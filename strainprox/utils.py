@@ -1076,7 +1076,7 @@ def metrics_comparison(
     for idx, key in enumerate(metric_keys):
         ax = axes[idx // 2, idx % 2]
         xmin = 0
-        xmax = 25
+        xmax = 100
         ax.set_xlim(xmin, xmax)
 
         vals_all = np.concatenate([np.asarray(methods[m][key][xmin:xmax]) for m in method_order if m in methods and key in methods[m]])
@@ -1096,3 +1096,216 @@ def metrics_comparison(
 
     plt.close(fig)
     return fig
+
+
+def metrics_comparison2(
+    methods: Dict[str, Dict[str, np.ndarray]],
+    *,
+    figsize: Tuple[float, float] = (16, 4),
+    log_interval: int = 1,
+) -> Tuple[plt.Figure, plt.Figure]:
+    """
+    Plot shift and strain metric convergence curves comparing methods.
+
+    Returns two separate figures (1x4 each): one for shift metrics,
+    one for strain metrics.
+
+    Parameters
+    ----------
+    methods : Dict[str, Dict[str, np.ndarray]]
+        Dictionary keyed by method identifier ('tk', 'tkst', 'tv', 'jis').
+        Each value must contain 1-D arrays for the metric keys listed below.
+    figsize : tuple, optional
+        Figure size in inches for each figure. Default: (8, 16).
+    log_interval : int, optional
+        Iteration spacing between logged values. Default: 1.
+
+    Returns
+    -------
+    (fig_shift, fig_strain) : tuple of matplotlib.figure.Figure
+    """
+    shift_keys = ['shift_global_mae', 'shift_roi_mae', 'shift_bg_leakage', 'shift_dice']
+    strain_keys = ['strain_global_mae', 'strain_roi_mae', 'strain_bg_leakage', 'strain_dice']
+    metric_labels = {
+        'shift_global_mae': 'Global MAE',
+        'shift_roi_mae': 'ROI MAE',
+        'shift_bg_leakage': 'BG Leakage',
+        'shift_dice': 'Dice',
+        'strain_global_mae': 'Global MAE',
+        'strain_roi_mae': 'ROI MAE',
+        'strain_bg_leakage': 'BG Leakage',
+        'strain_dice': 'Dice',
+    }
+    method_labels = {'tk': 'TK', 'tkst': 'TKST', 'tv': 'TV', 'jis': 'JIS'}
+    method_order = ['tk', 'tkst', 'tv', 'jis']
+
+    def _plot_group(keys, title):
+        fig, axes = plt.subplots(nrows=1, ncols=4, figsize=figsize, constrained_layout=True)
+        fig.suptitle(title)
+        for idx, key in enumerate(keys):
+            ax = axes[idx]
+            xmin, xmax = 0, 100
+            ax.set_xlim(xmin, xmax)
+
+            vals_all = np.concatenate([
+                np.asarray(methods[m][key][xmin:xmax])
+                for m in method_order if m in methods and key in methods[m]
+            ])
+            ax.set_ylim(vals_all.min() * 0.9, vals_all.max() * 1.1)
+
+            for mkey in method_order:
+                if mkey not in methods or key not in methods[mkey]:
+                    continue
+                vals = np.asarray(methods[mkey][key])
+                iters = np.arange(1, len(vals) + 1) * log_interval
+                ax.plot(iters, vals, label=method_labels.get(mkey, mkey.upper()))
+            ax.set_title(metric_labels[key])
+            ax.set_xlabel('Iteration')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        return fig
+
+    fig_shift = _plot_group(shift_keys, 'Shift Metrics')
+    fig_strain = _plot_group(strain_keys, 'Strain Metrics')
+    return fig_shift, fig_strain
+
+
+
+def metrics_comparison3(
+    results_dir: Optional[str] = '/ibex/user/romerojd/strainprox/notebooks/results/hess/grid_search',
+    *,
+    files: Optional[List[str]] = None,
+    figsize: Tuple[float, float] = (16, 4),
+    log_interval: int = 1,
+) -> Tuple[plt.Figure, plt.Figure]:
+    """
+    Load .npz result files and plot shift / strain metric convergence
+    curves comparing all configurations.
+
+    Provide *either* ``results_dir`` (loads every .npz in the directory)
+    *or* ``files`` (an explicit list of .npz paths).  If both are given
+    ``files`` takes precedence.
+
+    Returns two separate figures (1x4 each): one for shift metrics,
+    one for strain metrics.
+
+    Parameters
+    ----------
+    results_dir : str or None
+        Directory containing the .npz result files.
+    files : list of str or None
+        Explicit list of .npz file paths to load.
+    figsize : tuple, optional
+        Figure size in inches for each figure.
+    log_interval : int, optional
+        Iteration spacing between logged values. Default: 1.
+
+    Returns
+    -------
+    (fig_shift, fig_strain) : tuple of matplotlib.figure.Figure
+    """
+    if files is not None:
+        npz_files = [Path(f) for f in files]
+    elif results_dir is not None:
+        npz_files = sorted(Path(results_dir).glob('*.npz'))
+    else:
+        raise ValueError('Provide either results_dir or files')
+    if not npz_files:
+        raise FileNotFoundError('No .npz files found')
+
+    methods: Dict[str, Dict[str, np.ndarray]] = {}
+    for f in npz_files:
+        label = f.stem.replace('time_strain_jis_', '')
+        data = np.load(f)
+        methods[label] = {k: data[k] for k in data.files}
+
+    method_names = sorted(methods.keys())
+
+    shift_keys = ['shift_global_mae', 'shift_roi_mae', 'shift_bg_leakage', 'shift_dice']
+    strain_keys = ['strain_global_mae', 'strain_roi_mae', 'strain_bg_leakage', 'strain_dice']
+    metric_labels = {
+        'shift_global_mae': 'Global MAE',
+        'shift_roi_mae': 'ROI MAE',
+        'shift_bg_leakage': 'BG Leakage',
+        'shift_dice': 'Dice',
+        'strain_global_mae': 'Global MAE',
+        'strain_roi_mae': 'ROI MAE',
+        'strain_bg_leakage': 'BG Leakage',
+        'strain_dice': 'Dice',
+    }
+
+    def _plot_group(keys, title):
+        fig, axes = plt.subplots(nrows=1, ncols=4, figsize=figsize, constrained_layout=True)
+        fig.suptitle(title)
+        for idx, key in enumerate(keys):
+            ax = axes[idx]
+            xmin, xmax = 0, 100
+            ax.set_xlim(xmin, xmax)
+
+            vals_all = np.concatenate([
+                np.asarray(methods[m][key][xmin:xmax])
+                for m in method_names if key in methods[m]
+            ])
+            ax.set_ylim(vals_all.min() * 0.9, vals_all.max() * 1.1)
+
+            for mkey in method_names:
+                if key not in methods[mkey]:
+                    continue
+                vals = np.asarray(methods[mkey][key])
+                iters = np.arange(1, len(vals) + 1) * log_interval
+                ax.plot(iters, vals, alpha=0.4, linewidth=0.8, label=mkey)
+            ax.set_title(metric_labels[key])
+            ax.set_xlabel('Iteration')
+            ax.grid(True, alpha=0.3)
+        return fig
+
+    fig_shift = _plot_group(shift_keys, 'Shift Metrics')
+    fig_strain = _plot_group(strain_keys, 'Strain Metrics')
+    return fig_shift, fig_strain
+
+
+def top_k_configs(
+    methods: Dict[str, Dict[str, np.ndarray]],
+    metric: str,
+    *,
+    iter_range: Tuple[int, int] = (0, 100),
+    k: int = 5,
+) -> List[Tuple[str, float]]:
+    """
+    Return the *k* best configurations for a given metric over an
+    iteration window.
+
+    "Best" = lowest value for MAE / RMSE / leakage metrics,
+    highest value for Dice.
+
+    Parameters
+    ----------
+    methods : Dict[str, Dict[str, np.ndarray]]
+        Dictionary keyed by configuration label.  Each value is a dict
+        mapping metric names to 1-D arrays (one entry per logged iteration).
+    metric : str
+        Metric key, e.g. ``'strain_roi_mae'``, ``'shift_dice'``.
+    iter_range : (int, int), optional
+        (start, stop) iteration indices (0-based, exclusive stop).
+        Default: ``(0, 100)``.
+    k : int, optional
+        Number of top configurations to return. Default: 5.
+
+    Returns
+    -------
+    list of (label, score)
+        Sorted from best to worst.
+    """
+    higher_is_better = 'dice' in metric.lower()
+    start, stop = iter_range
+
+    scores: List[Tuple[str, float]] = []
+    for label, data in methods.items():
+        if metric not in data:
+            continue
+        vals = np.asarray(data[metric])[start:stop]
+        best_val = float(vals.max() if higher_is_better else vals.min())
+        scores.append((label, best_val))
+
+    scores.sort(key=lambda x: x[1], reverse=higher_is_better)
+    return scores[:k]
