@@ -41,5 +41,6 @@ results/
 scripts/
 *.out
 .vscode/
+*.png
 
 

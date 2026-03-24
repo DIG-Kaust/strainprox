@@ -974,7 +974,7 @@ def results_grid(
     used_rows = min(len(rows), nrows)
 
     for j, title in enumerate(col_titles):
-        axes[0, j].set_title(title)
+        axes[0, j].set_title(title, fontsize=14, fontweight='bold')
 
     for i in range(nrows):
         if i < used_rows:
@@ -989,19 +989,17 @@ def results_grid(
                             extent=(0, dims[1], dims[0] * dt, 0))
             ax.axis('tight')
             ax.set_ylabel('TWT $[s]$')
-            if row['name'] == 'Ground truth':
-                ax.set_title(f"{row['name']}")
-            else:
-                ax.set_title(f"{row['name']} | MAE: {row['strain_roi_mae']:.4f}")
-
+            ax.annotate(row['name'], xy=(0, 0.5), xytext=(-50, 0),
+                        xycoords='axes fraction', textcoords='offset points',
+                        ha='center', va='center', rotation=90,
+                        fontsize=14, fontweight='bold')
+       
             # Time shift
             ax = axes[i, 1]
             im1 = ax.imshow(shift_img, cmap='seismic', vmin=shift_limits[0], vmax=shift_limits[1],
                             extent=(0, dims[1], dims[0] * dt, 0))
             ax.axis('tight')
             ax.set_yticklabels([])
-            if row['name'] != 'Ground truth':
-                ax.set_title(f"MAE: {row['shift_roi_mae']:.4f}")
 
             # Difference
             ax = axes[i, 2]
@@ -1103,6 +1101,7 @@ def metrics_comparison2(
     *,
     figsize: Tuple[float, float] = (16, 4),
     log_interval: int = 1,
+    time_axis: bool = False,
 ) -> Tuple[plt.Figure, plt.Figure]:
     """
     Plot shift and strain metric convergence curves comparing methods.
@@ -1119,6 +1118,9 @@ def metrics_comparison2(
         Figure size in inches for each figure. Default: (8, 16).
     log_interval : int, optional
         Iteration spacing between logged values. Default: 1.
+    time_axis : bool, optional
+        If True, the x-axis displays cumulative time from ``methods[key]['cum_time']``
+        instead of iteration number. Default: False.
 
     Returns
     -------
@@ -1127,14 +1129,14 @@ def metrics_comparison2(
     shift_keys = ['shift_global_mae', 'shift_roi_mae', 'shift_bg_leakage', 'shift_dice']
     strain_keys = ['strain_global_mae', 'strain_roi_mae', 'strain_bg_leakage', 'strain_dice']
     metric_labels = {
-        'shift_global_mae': 'Global MAE',
-        'shift_roi_mae': 'ROI MAE',
-        'shift_bg_leakage': 'BG Leakage',
-        'shift_dice': 'Dice',
-        'strain_global_mae': 'Global MAE',
-        'strain_roi_mae': 'ROI MAE',
-        'strain_bg_leakage': 'BG Leakage',
-        'strain_dice': 'Dice',
+        'shift_global_mae': 'a) Global MAE',
+        'shift_roi_mae': 'b) ROI MAE',
+        'shift_bg_leakage': 'c) BG Leakage',
+        'shift_dice': 'd) Dice',
+        'strain_global_mae': 'a) Global MAE',
+        'strain_roi_mae': 'b) ROI MAE',
+        'strain_bg_leakage': 'c) BG Leakage',
+        'strain_dice': 'd) Dice',
     }
     method_labels = {'tk': 'TK', 'tkst': 'TKST', 'tv': 'TV', 'jis': 'JIS'}
     method_order = ['tk', 'tkst', 'tv', 'jis']
@@ -1144,8 +1146,11 @@ def metrics_comparison2(
         fig.suptitle(title)
         for idx, key in enumerate(keys):
             ax = axes[idx]
-            xmin, xmax = 0, 100
-            ax.set_xlim(xmin, xmax)
+            if time_axis is False:
+                xmin, xmax = 0, 100
+                ax.set_xlim(xmin, xmax)
+            else:
+                xmin, xmax = 0,200
 
             vals_all = np.concatenate([
                 np.asarray(methods[m][key][xmin:xmax])
@@ -1157,10 +1162,13 @@ def metrics_comparison2(
                 if mkey not in methods or key not in methods[mkey]:
                     continue
                 vals = np.asarray(methods[mkey][key])
-                iters = np.arange(1, len(vals) + 1) * log_interval
-                ax.plot(iters, vals, label=method_labels.get(mkey, mkey.upper()))
+                if time_axis:
+                    x = np.asarray(methods[mkey]['cum_time']/60)
+                else:
+                    x = np.arange(1, len(vals) + 1) * log_interval
+                ax.plot(x, vals, label=method_labels.get(mkey, mkey.upper()))
             ax.set_title(metric_labels[key])
-            ax.set_xlabel('Iteration')
+            ax.set_xlabel('Time [min]' if time_axis else 'GN Iterations')
             ax.legend()
             ax.grid(True, alpha=0.3)
         return fig
