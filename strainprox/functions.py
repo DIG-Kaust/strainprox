@@ -7,7 +7,7 @@ from pyproximal.optimization.segmentation import Segment
 from pyproximal.optimization.primaldual import PrimalDual
 
 def strain_jis(d, Op, x0, ui,  dims, cl, 
-               alpha, beta, delta, tau, mu,
+               alpha, beta, delta, tau, mu, tau_seg=0.7,
                niter=4, l2niter=20, pdniter=100, segmentniter=10, bisectniter=30, 
                tolstop=0., bregman=False, utrue=None, plotflag=True, show=False):
     
@@ -44,6 +44,8 @@ def strain_jis(d, Op, x0, ui,  dims, cl,
         Step size for the primal variable updates.
     mu : float
         Step size for the dual variable updates.
+    tau_seg : float, optional
+        Step size for the primal variable in the segmentation solver. Default is 0.7.
     niter : int, optional
         Number of outer iterations of the joint inversion-segmentation scheme. Default is 4.
     l2niter : int, optional
@@ -160,7 +162,7 @@ def strain_jis(d, Op, x0, ui,  dims, cl,
         ################
         # Segmentation #
         ################
-        v, vcl = Segment_(ui, cl, 2 * delta, 2 * beta, z=(-beta * q if bregman else None),
+        v, vcl = Segment_(ui, cl, 2 * delta, 2 * beta, tau_seg=tau_seg, z=(-beta * q if bregman else None),
                         niter=segmentniter, callback=None, show=show,
                         kwargs_simplex=dict(engine='numba',
                                             maxiter=bisectniter, call=False))
@@ -195,7 +197,7 @@ def strain_jis(d, Op, x0, ui,  dims, cl,
 
 
 def strain_jis_cp(d, Op, x0, ui,  dims, cl, 
-               alpha, beta, delta, tau, mu,
+               alpha, beta, delta, tau, mu, tau_seg=0.7,
                niter=4, l2niter=20, pdniter=100, segmentniter=10, bisectniter=30, 
                tolstop=0., bregman=False, utrue=None, plotflag=True, show=False):
     
@@ -232,6 +234,8 @@ def strain_jis_cp(d, Op, x0, ui,  dims, cl,
         Step size for the primal variable updates.
     mu : float
         Step size for the dual variable updates.
+    tau_seg : float, optional
+        Step size for the primal variable in the segmentation solver. Default is 0.7.
     niter : int, optional
         Number of outer iterations of the joint inversion-segmentation scheme. Default is 4.
     l2niter : int, optional
@@ -282,7 +286,7 @@ def strain_jis_cp(d, Op, x0, ui,  dims, cl,
     ncl = len(cl)
 
     # TV regularization term
-    Dop = Gradient(dims=dims, edge=True, dtype='float32', kind='forward')
+    Dop = Gradient(dims=dims, edge=True, dtype='float64', kind='forward')
     l1 = L21(ndim=len(dims), sigma=alpha)
     v = cp.zeros(ncl * msize)
 
@@ -344,7 +348,7 @@ def strain_jis_cp(d, Op, x0, ui,  dims, cl,
         ################
         # Segmentation #
         ################
-        v, vcl = Segment_(ui, cl, 2 * delta, 2 * beta, z=(-beta * q if bregman else None),
+        v, vcl = Segment_(ui, cl, 2 * delta, 2 * beta, tau_seg=tau_seg, z=(-beta * q if bregman else None),
                         niter=segmentniter, callback=None, show=show,
                         kwargs_simplex=dict(maxiter=bisectniter, call=False, engine='cuda'))
 
@@ -394,6 +398,7 @@ def Segment_(
     cl: NDArray,
     sigma: float,
     alpha: float,
+    tau_seg: float,
     clsigmas: Optional[NDArray] = None,
     z: Optional[NDArray] = None,
     niter: int = 10,
@@ -417,6 +422,8 @@ def Segment_(
         Positive scalar weight of the misfit term
     alpha : :obj:`float`
         Positive scalar weight of the regularization term
+    tau_seg : :obj:`float`
+        Step size for the primal variable in the segmentation Primal-Dual solver
     clsigmas : :obj:`numpy.ndarray`, optional
         Classes standard deviations
     z : :obj:`numpy.ndarray`, optional
@@ -497,7 +504,7 @@ def Segment_(
 
     # Steps
     L = 8.0 / sampling**2
-    tau = 0.7
+    tau = tau_seg
     mu = 1.0 / (tau * L)
 
     # Inversion

@@ -20,18 +20,22 @@ from pyproximal.optimization.primaldual import PrimalDual
 def main():
     parser = argparse.ArgumentParser(description="Strain inversion grid search")
     parser.add_argument("--mu", type=float, required=True, help="Step size parameter mu")
+    parser.add_argument("--tau_seg", type=float, default=0.7, help="Step size parameter tau for segmentation")
     parser.add_argument("--beta", type=float, required=True, help="TV regularization weight for segmentation")
     parser.add_argument("--delta", type=float, required=True, help="Segmentation misfit weight")
-    parser.add_argument("--alpha", type=float, default=10., help="TV regularization weight for inversion")
+    parser.add_argument("--alpha", type=float, default=5., help="TV regularization weight for inversion")
     parser.add_argument("--niter", type=int, default=2, help="Number of inner iterations")
     parser.add_argument("--pdniter", type=int, default=10, help="Primal-Dual iterations")
     parser.add_argument("--segmentniter", type=int, default=10, help="Segmentation iterations")
-    parser.add_argument("--bisectniter", type=int, default=10, help="Bisection iterations for simplex")
+    parser.add_argument("--bisectniter", type=int, default=5, help="Bisection iterations for simplex")
+    parser.add_argument("--cl", type=float, default=0.15, help="Class magnitude for segmentation vector [-cl, 0, cl]")
+    parser.add_argument("--scale", type=float, default=4e4, help="Scaling divisor for data and wavelet")
     parser.add_argument("--outdir", type=str, default="../results/hess/grid_search",
-                        help="Output directory for images")
+                        help="Output directory for results")
     args = parser.parse_args()
 
     mu = args.mu
+    tau_seg = args.tau_seg
     beta = args.beta
     delta = args.delta
     alpha = args.alpha
@@ -60,14 +64,14 @@ def main():
     l1 = L21(ndim=len(dims), sigma=1.)
 
     outeriter = 100
-    l2niter = 25
+    l2niter = 20
 
     ui = cp.zeros(np.prod(dims))
     d2i = d2.copy()
     gt_shift = C * utrue.reshape(dims)
     gt_strain = utrue.reshape(dims)
 
-    cl = cp.array([-0.15, 0, 0.15])
+    cl = cp.array([-args.cl, 0., args.cl])
 
     L_approx = 8.
     tau = 0.99 / (mu * L_approx)
@@ -96,6 +100,7 @@ def main():
             alpha=alpha,
             beta=beta,
             delta=delta,
+            tau_seg=tau_seg,
             tau=tau,
             mu=mu,
             niter=niter,
@@ -144,7 +149,7 @@ def main():
     pred_strain_np = cp.asnumpy(pred_strain)
     d2i_np = cp.asnumpy(d2i)
 
-    tag = f"mu{mu}_alpha{alpha}_beta{beta}_delta{delta}_niter{niter}_pd{pdniter}_seg{segmentniter}_bis{bisectniter}"
+    tag = f"mu{mu}_tau_seg{tau_seg}_alpha{alpha}_beta{beta}_delta{delta}_cl{args.cl}_scale{args.scale}_niter{niter}_pd{pdniter}_seg{segmentniter}_bis{bisectniter}"
     fname = os.path.join(outdir, f"strain_shift_{tag}.png")
     strain_shift(strain=pred_strain_np, shift=pred_shift_np, filename=fname)
     print(f"Saved: {fname}")

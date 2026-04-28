@@ -641,7 +641,7 @@ def explode_volume(
     y: Optional[int] = None, 
     vmin: Optional[float] = None, 
     vmax: Optional[float] = None,
-    figsize: Tuple[int, int] = (8, 8), 
+    figsize: Optional[Tuple[int, int]] = None, 
     cmap: str = 'bone', 
     clipval: Optional[Tuple[float, float]] = None, 
     p: int = 98,
@@ -671,7 +671,8 @@ def explode_volume(
     vmin, vmax : float, optional
         Color limits.
     figsize : tuple of (int, int), optional
-        Figure size. Default is (8, 8).
+        Figure size. If None, computed automatically from the volume
+        dimensions to preserve consistent spatial scaling.
     cmap : str, optional
         Colormap. Default is 'bone'.
     clipval : tuple of (float, float), optional
@@ -707,7 +708,7 @@ def explode_volume(
         A tuple containing the three axes objects for the slices.
     """
     if linespec is None:
-        linespec = dict(ls='-', lw=1, color='orange')
+        linespec = dict(ls='-', lw=1, color='black')
     nt, nx, ny = volume.shape
     t_label, x_label, y_label = labels
     
@@ -725,17 +726,13 @@ def explode_volume(
         y_label = "samples"
         ylim = (0, volume.shape[2])
     
-    # vertical lines for coordinates reference
     tline = (tlim[1] - tlim[0]) / nt * t + tlim[0]
     xline = (xlim[1] - xlim[0]) / nx * x + xlim[0]
     yline = (ylim[1] - ylim[0]) / ny * y + ylim[0]
     
-    # instantiate plots
-    fig = plt.figure(figsize=figsize)
-    fig.suptitle(title, fontsize=15, fontweight='bold', y=0.95)
     if ratio is None:
         wr = (nx, ny)
-        hr = (nx, nt)
+        hr = (ny, nt * 2)
     else:
         wr = ratio[0]
         hr = ratio[1]
@@ -743,39 +740,49 @@ def explode_volume(
     if whspace is None:
         whspace = (0., 0.)
 
-    opts = dict(cmap=cmap, vmin=vmin, vmax=vmax, 
+    ml, mr, mb, mt = 0.09, 0.02, 0.07, 0.05
+    plot_w = 1 - ml - mr
+    plot_h = 1 - mb - mt
+
+    if figsize is None:
+        W = 8
+        H = W * plot_w / plot_h * sum(hr) / sum(wr)
+        figsize = (W, H)
+
+    fig = plt.figure(figsize=figsize)
+    fig.suptitle(title, fontsize=15, fontweight='bold')
+
+    opts = dict(cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto',
                 clim=clipval if clipval is not None else clim(volume, p))
-    opts2 = dict(aspect=1.)
     
     gs = fig.add_gridspec(2, 2, width_ratios=wr, height_ratios=hr,
-                          left=0.1, right=0.9, bottom=0.1, top=1.0,
+                          left=ml, right=1-mr, bottom=mb, top=1-mt,
                           wspace=whspace[0], hspace=whspace[1])
     
     ax = fig.add_subplot(gs[1, 0])
     ax_top = fig.add_subplot(gs[0, 0], sharex=ax)
     ax_right = fig.add_subplot(gs[1, 1], sharey=ax)
-    ax_ = fig.add_subplot(gs[0, 1], sharex=ax_right, sharey=ax_top)
-    ax_.axis('off')
-    ax.axis('tight')
+    ax_cb = fig.add_subplot(gs[0, 1])
+    ax_cb.axis('off')
 
-    # central plot
-    ax.imshow(volume[:, :, y], extent=[xlim[0], xlim[1], tlim[1], tlim[0]], **opts, **opts2)
+    # central plot (crossline section)
+    im = ax.imshow(volume[:, :, y],
+                   extent=[xlim[0], xlim[1], tlim[1], tlim[0]], **opts)
     ax.axvline(x=xline, **linespec)
     ax.axhline(y=tline, **linespec)
-    ax.axis('tight')
 
-    # top plot
-    ax_top.imshow(volume[t].T, extent=[xlim[0], xlim[1], ylim[1], ylim[0]], **opts)
+    # top plot (time slice)
+    ax_top.imshow(volume[t].T,
+                  extent=[xlim[0], xlim[1], ylim[1], ylim[0]], **opts)
     ax_top.axvline(x=xline, **linespec)
     ax_top.axhline(y=yline, **linespec)
-    ax_top.sharex(ax)
     ax_top.invert_yaxis()
     
-    # right plot
-    ax_right.imshow(volume[:, x], extent=[ylim[0], ylim[1], tlim[1], tlim[0]], **opts, **opts2)
+    # right plot (inline section)
+    ax_right.imshow(volume[:, x],
+                    extent=[ylim[0], ylim[1], tlim[1], tlim[0]], **opts)
     ax_right.axvline(x=yline, **linespec)
     ax_right.axhline(y=tline, **linespec)
-    ax_right.axis('tight')
     
     # labels
     ax_top.tick_params(axis="x", labelbottom=False)
@@ -785,10 +792,12 @@ def explode_volume(
     ax_right.set_xlabel("inline " + y_label)
     ax_top.set_ylabel("inline " + y_label)
 
-    cbar_ax = fig.add_axes([0.6, 0.7, 0.02, 0.15])
-    cbar_ax.set_title(colorbar_title, fontsize=10, loc='left')
-    plt.colorbar(ax.images[0], cax=cbar_ax)
-    fig.tight_layout()
+    pos = ax_cb.get_position()
+    cbar_ax = fig.add_axes([pos.x0 + pos.width * 0.8, pos.y0 + pos.height * 0.05,
+                            pos.width * 0.05, pos.height * 0.3])
+    cbar_ax.set_title(colorbar_title, fontsize=10, loc='left', y=1.1, fontweight='bold')
+    clim_lo, clim_hi = im.get_clim()
+    plt.colorbar(im, cax=cbar_ax, ticks=[clim_lo, 0, clim_hi])
     
     if filename is not None:
         if save_opts is None:
@@ -886,7 +895,7 @@ def results_grid(
     dims: Tuple[int, ...],
     dt: float,
     *,
-    figsize: Tuple[float, float] = (15, 20),
+    figsize: Tuple[float, float] = (10, 14),
     strain_limits: Tuple[float, float] = (-0.1, 0.1),
     shift_limits: Tuple[float, float] = (-0.03, 0.03),
     amp_limits: Tuple[float, float] = (-0.1, 0.1),
@@ -943,8 +952,7 @@ def results_grid(
 
     # Ground truth row
     shift_true = as_img(tautrue)
-    d2_true = apply_time_shift(d2, shift_true, t, dims)
-    rows.append(dict(name='Ground truth', u=utrue, shift=shift_true, d2s=d2_true))
+    rows.append(dict(name='Ground truth', u=utrue, shift=shift_true, d2s=d2))
 
     # Method rows in fixed order
     for key in method_order:
@@ -981,7 +989,7 @@ def results_grid(
             row = rows[i]
             u_img = as_img(row['u'])
             shift_img = row['shift']
-            diff_img = d1 - row['d2s']
+            diff_img =  row['d2s'] - d1
 
             # Time strain
             ax = axes[i, 0]
@@ -993,13 +1001,16 @@ def results_grid(
                         xycoords='axes fraction', textcoords='offset points',
                         ha='center', va='center', rotation=90,
                         fontsize=14, fontweight='bold')
-       
+            if i < 4:
+                ax.set_xticklabels([])
             # Time shift
             ax = axes[i, 1]
             im1 = ax.imshow(shift_img, cmap='seismic', vmin=shift_limits[0], vmax=shift_limits[1],
                             extent=(0, dims[1], dims[0] * dt, 0))
             ax.axis('tight')
             ax.set_yticklabels([])
+            if i < 4:
+                ax.set_xticklabels([])
 
             # Difference
             ax = axes[i, 2]
@@ -1007,10 +1018,29 @@ def results_grid(
                             extent=(0, dims[1], dims[0] * dt, 0))
             ax.axis('tight')
             ax.set_yticklabels([])
+            if i < 4:
+                ax.set_xticklabels([])
         else:
             # Hide unused rows
             for j in range(ncols):
                 axes[i, j].axis('off')
+
+    # Colorbars at the bottom of each column
+    col_cbar_labels = ['Time strain', 'Time shift $[s]$', 'Amplitude']
+    col_ims = [im0, im1, im2]
+    col_limits = [strain_limits, shift_limits, amp_limits]
+    for j in range(ncols):
+        vmin, vmax = col_limits[j]
+        cbar = fig.colorbar(
+            col_ims[j],
+            ax=axes[:, j].tolist(),
+            location='bottom',
+            shrink=0.5,
+            aspect=15,
+            pad=0.01,
+            label=col_cbar_labels[j],
+        )
+        cbar.set_ticks([vmin, 0, vmax])
 
     plt.close(fig)
     return fig
@@ -1099,7 +1129,7 @@ def metrics_comparison(
 def metrics_comparison2(
     methods: Dict[str, Dict[str, np.ndarray]],
     *,
-    figsize: Tuple[float, float] = (16, 4),
+    figsize: Tuple[float, float] = (12, 3),
     log_interval: int = 1,
     time_axis: bool = False,
 ) -> Tuple[plt.Figure, plt.Figure]:
@@ -1135,7 +1165,7 @@ def metrics_comparison2(
         'shift_dice': 'd) Dice',
         'strain_global_mae': 'a) Global MAE',
         'strain_roi_mae': 'b) ROI MAE',
-        'strain_bg_leakage': 'c) BG Leakage',
+        'strain_bg_leakage': 'c) Leak',
         'strain_dice': 'd) Dice',
     }
     method_labels = {'tk': 'TK', 'tkst': 'TKST', 'tv': 'TV', 'jis': 'JIS'}
@@ -1143,7 +1173,7 @@ def metrics_comparison2(
 
     def _plot_group(keys, title):
         fig, axes = plt.subplots(nrows=1, ncols=4, figsize=figsize, constrained_layout=True)
-        fig.suptitle(title)
+        # fig.suptitle(title)
         for idx, key in enumerate(keys):
             ax = axes[idx]
             if time_axis is False:
@@ -1169,8 +1199,9 @@ def metrics_comparison2(
                 ax.plot(x, vals, label=method_labels.get(mkey, mkey.upper()))
             ax.set_title(metric_labels[key])
             ax.set_xlabel('Time [min]' if time_axis else 'GN Iterations')
-            ax.legend()
             ax.grid(True, alpha=0.3)
+            if idx == 3:
+                ax.legend()
         return fig
 
     fig_shift = _plot_group(shift_keys, 'Shift Metrics')
